@@ -1,88 +1,141 @@
+// LIBRERIAS
 #include <SoftwareSerial.h>
 #include <TinyGPS.h>
 
-#define LEDVERDE 6
-#define LEDROJO 5
-#define ANALOGPILA 0
+// CONSTANTES
+#define LED_VERDE 6
+#define LED_ROJO 5
+#define LED_PANICO 7
+#define ANALOG_PILA 0
+#define PIN_BOTON 2
+#define PIN_BUZZER 8
+// constantes para definir el estado del boton
+#define ON true
+#define OFF false
 
+// OBJETOS
 TinyGPS gps;
-SoftwareSerial softSerial(4, 3); // (tx,rx)
+SoftwareSerial GPS(4, 3);		 // Modulo GPS (RX = PIN 4 | TX = PIN 3)
+SoftwareSerial BLUETOOTH(10, 9); // Modulo Bluetooth (RX = PIN 10 | TX = PIN 9)
 
-String dato; //Se crea la variable dato tipo entero
-const int BOTON = 2;
-int val = 0;	  //val se emplea para almacenar el estado del boton
-int state = 0;	// 0 LED apagado, mientras que 1 encendido
-int old_val = 0;  // almacena el antiguo valor de val
-char cadena[255]; //Creamos un array de caracteres de 256 cposiciones
-int i = 0;		  //Tamaño actual del array
+// VARIABLES
 String lati, lon, coor;
-long inicio, fin;
-int sw = 0, paso = 0;
+int dato;  // Se crea la variable dato tipo String
+int i = 0; // Tamaño actual del array
+int sw = 0;
 int analogValor = 0;
+int ledDelay = 50; // delay de 2 segundos
+unsigned long inicio, fin;
 float voltaje = 0;
-int ledDelay = 2000;
 // Umbrales de niveles
 float maximo = 4.3;
 float minimo = 3.8;
+char cadena[255]; // Creamos un array de caracteres de 256 posiciones
 
+// SUPER GLOBALES
+bool ESTADO = OFF; // OFF: LED apagado / ON: LED encendido
+
+// CONFIGURACION_____________________________________________
 void setup()
 {
-	Serial.begin(38400);
-	softSerial.begin(9600);
-	pinMode(7, OUTPUT); //Definimos el pin 7 como salida
-	pinMode(2, INPUT);  // y BOTON como señal de entrada
-	// Los pines de LED nivel de bateria en modo salida
-	pinMode(LEDVERDE, OUTPUT);
-	pinMode(LEDROJO, OUTPUT);
+	/* NOTA: Puerto Serial
+		1. El puerto serial fisico (Serial) si se usa para comunicar
+		otros dispositivos puede interferir en la subida del codigo,
+		es mejor dejarlo solo para depurar, es decir: ver lo que pasa
+		en el arduino desde el monitor serial).
+
+		2. El puerto serial virtual (SoftwareSerial) resiste velocidades
+		muy altas, es el recomendado para la comunicacion con otros
+		dispositvos
+	*/
+
+	// BAUDIOS
+	Serial.begin(9600);	// Puerto serial fisico
+	GPS.begin(38400);	  // Puerto virtual para GPS
+	BLUETOOTH.begin(9600); // Puerto virtual para Bluetooth
+
+	// PINES DE ENTRADA
+	pinMode(PIN_BOTON, INPUT);
+
+	// PINES DE SALIDA
+	pinMode(LED_PANICO, OUTPUT);
+	pinMode(PIN_BUZZER, OUTPUT);
+	pinMode(LED_VERDE, OUTPUT);
+	pinMode(LED_ROJO, OUTPUT);
+
+	Serial.println("__INICIO__");
 }
 
+// INICIO_____________________________________________________
 void loop()
 {
-	val = digitalRead(2); // lee el estado del Boton
+	// MONITOR
+	if (digitalRead(PIN_BOTON)) // se monitorea el estado del boton
+	{
+		// antirrebote: esperar hasta que se estabilice el boton
+		while (digitalRead(PIN_BOTON))
+		{
+			// ESPERANDO...
+		}
+		/*
+			estado toggle: cambia el comportamiento del boton
+			cada vez que se pulsa
+		*/
+		ESTADO = !ESTADO;
+	}
 
-	if (val == HIGH)
+	// PROCESO
+	if (ESTADO == ON) // PANICO: se detiene todo
 	{
-		state = 1 - state;
-		Serial.println("Panico");
+		Serial.println("__PARAR__");
+
+		digitalWrite(LED_PANICO, HIGH); // enciende el LED
+		digitalWrite(PIN_BUZZER, HIGH); // Encender buzzer
+
+		resetPanico(); // esperamos trama para salir del modo PANICO
 	}
-	old_val = val; // valor del antiguo estado
-	if (state == 1)
+	else if (ESTADO == OFF) // NORMAL: todo en funcionamiento
 	{
-		digitalWrite(7, HIGH); // enciende el LED
-		apagado();
-	}
-	else
-	{
-		digitalWrite(7, LOW); // enciende el LED
+		digitalWrite(LED_PANICO, LOW); // apaga el LED
+		digitalWrite(PIN_BUZZER, LOW); // Encender buzzer
+
 		localizador();
 		bateria();
 	}
 }
 
+// FUNCIONES__________________________________________________
 void localizador()
 {
 	bool newData = false;
 	unsigned long chars;
 	unsigned short sentences, failed;
+
 	if (sw == 0)
 	{
 		sw = 1;
 		inicio = millis();
 	}
+
 	fin = millis();
-	if (fin - inicio < 6000)
+	if ((fin - inicio) < 6000)
 	{
+		// NADA
 	}
 	else
 	{
 		sw = 0;
 
 		// Intentar recibir secuencia durante
-		for (unsigned long start = millis(); millis() - start < 10000;)
+		for (unsigned long start = millis(); (millis() - start) < 10000;)
 		{
-			while (softSerial.available())
+			while (GPS.available())
 			{
-				char c = softSerial.read();
+				char c = GPS.read();
+
+				// GPS.println("Recibiendo  > " + (String)c + " < desde GPS"); // DEBUG: para el simulador
+				Serial.println("caracter = > " + (String)dato + " < recibido");
+
 				if (gps.encode(c)) // Nueva secuencia recibida
 				{
 					newData = true;
@@ -101,6 +154,68 @@ void localizador()
 		Serial.println(coor);
 	}
 }
+
+void bateria()
+{
+	// Leemos valor de la entrada analógica
+	analogValor = analogRead(ANALOG_PILA);
+
+	// Obtenemos el voltaje
+	voltaje = analogValor * (5.0 / 1023.0); // mas preciso que esto: (0.0044 * analogValor)
+
+	// Dependiendo del voltaje mostramos un LED u otro
+	if (voltaje >= maximo)
+	{
+		Serial.println("Voltaje = " + (String)voltaje + "v"); // mostrando voltaje
+
+		digitalWrite(LED_VERDE, HIGH);
+		delay(ledDelay);
+		digitalWrite(LED_VERDE, LOW);
+		delay(ledDelay);
+	}
+	else if ((voltaje > minimo) && (voltaje < maximo))
+	{
+		Serial.println("Voltaje = " + (String)voltaje + "v");
+
+		digitalWrite(LED_ROJO, HIGH);
+		delay(ledDelay);
+		digitalWrite(LED_ROJO, LOW);
+		delay(ledDelay);
+	}
+}
+
+void resetPanico()
+{
+	// Esperar trama desde modulo Bluetooth
+	while (BLUETOOTH.available() == 0)
+	{
+		// ESPERANDO...
+	}
+
+	if (BLUETOOTH.available() > 0) // Confirmamos si existe un valor en el modulo Bluetooth
+	{
+		char dato = BLUETOOTH.read(); // leemos el valor y lo asignamos a la variable dato
+
+		// BLUETOOTH.println("Recibiendo  > " + (String)dato + " < desde BLUETOOTH"); // DEBUG: para el simulador
+		Serial.println("caracter = > " + (String)dato + " < recibido");
+
+		switch (dato) // comparamos el valor guardado en la variable dato
+		{
+		case 'a':						   // si el dato leido es 'a'
+			digitalWrite(LED_PANICO, LOW); // Reiniciamos el led de panico
+			ESTADO = OFF;				   // Reiniciamos el estado del boton
+			break;
+
+		case 'b':
+			// Otra Accion
+			break;
+		}
+
+		clean();
+		Serial.println("__INICIO__");
+	}
+}
+
 void clean()
 {
 	for (int cl = 0; cl <= i; cl++)
@@ -108,49 +223,4 @@ void clean()
 		cadena[cl] = 0;
 	}
 	i = 0;
-}
-void bateria()
-{
-	// Leemos valor de la entrada analógica
-	analogValor = analogRead(ANALOGPILA);
-
-	// Obtenemos el voltaje
-	voltaje = 0.0044 * analogValor;
-
-	// Dependiendo del voltaje mostramos un LED u otro
-	if (voltaje >= maximo)
-	{
-		digitalWrite(LEDVERDE, HIGH);
-		delay(ledDelay);
-		digitalWrite(LEDVERDE, LOW);
-	}
-	else if (voltaje < maximo && voltaje > minimo)
-	{
-		digitalWrite(LEDROJO, HIGH);
-		delay(ledDelay);
-		digitalWrite(LEDROJO, LOW);
-	}
-}
-void apagado()
-{
-	if (Serial.available() > 0) //Confirmamos si existe un valor en el puerto serie
-	{
-		dato = Serial.read(); //leemos el valor y lo asignamos a la variable dato
-
-		//   switch(dato)	//comparamos el valor guardado en la variable dato
-		// {
-		//      case 'a': 	//si el dato leido es b
-		//            digitalWrite(7,0);	//setiamos a 0V el pin 13
-		//            state =0;
-		//            break;
-		//   }
-
-		if (dato == "a")
-		{
-			state = 0;
-			digitalWrite(7, 0);
-		}
-		dato = " ";
-		clean();
-	}
 }
