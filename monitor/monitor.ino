@@ -15,8 +15,7 @@
 
 // OBJETOS
 TinyGPS gps;
-SoftwareSerial GPS(4, 3);		 // Modulo GPS (RX = PIN 4 | TX = PIN 3)
-SoftwareSerial BLUETOOTH(10, 9); // Modulo Bluetooth (RX = PIN 10 | TX = PIN 9)
+SoftwareSerial SerialGPS(4, 3); // Modulo GPS (RX = PIN 4 | TX = PIN 3)
 
 // VARIABLES
 String lati, lon, coor;
@@ -24,7 +23,6 @@ int dato;  // Se crea la variable dato tipo String
 int i = 0; // Tamaño actual del array
 int sw = 0;
 int analogValor = 0;
-int ledDelay = 50; // delay de 2 segundos
 unsigned long inicio, fin;
 float voltaje = 0;
 // Umbrales de niveles
@@ -34,6 +32,7 @@ char cadena[255]; // Creamos un array de caracteres de 256 posiciones
 
 // SUPER GLOBALES
 bool ESTADO = OFF; // OFF: LED apagado / ON: LED encendido
+unsigned long START;
 
 // CONFIGURACION_____________________________________________
 void setup()
@@ -50,9 +49,8 @@ void setup()
 	*/
 
 	// BAUDIOS
-	Serial.begin(9600);	// Puerto serial fisico
-	GPS.begin(38400);	  // Puerto virtual para GPS
-	BLUETOOTH.begin(9600); // Puerto virtual para Bluetooth
+	SerialGPS.begin(9600); // Puerto virtual para GPS
+	Serial.begin(38400);   // Puerto fisico para Bluetooth
 
 	// PINES DE ENTRADA
 	pinMode(PIN_BOTON, INPUT);
@@ -63,48 +61,44 @@ void setup()
 	pinMode(LED_VERDE, OUTPUT);
 	pinMode(LED_ROJO, OUTPUT);
 
-	Serial.println("__INICIO__");
+	// INICIALIZAR PINES
+	digitalWrite(LED_PANICO, LOW);
+	digitalWrite(PIN_BUZZER, LOW);
+	digitalWrite(LED_VERDE, LOW);
+	digitalWrite(LED_ROJO, LOW);
+
+	// INTERRUCCION
+	// RISING, Dispara en el flanco de subida (Cuando pasa de LOW a HIGH)
+	attachInterrupt(0, activacionBoton, RISING);
 }
 
 // INICIO_____________________________________________________
 void loop()
 {
-	// MONITOR
-	if (digitalRead(PIN_BOTON)) // se monitorea el estado del boton
-	{
-		// antirrebote: esperar hasta que se estabilice el boton
-		while (digitalRead(PIN_BOTON))
-		{
-			// ESPERANDO...
-		}
-		/*
-			estado toggle: cambia el comportamiento del boton
-			cada vez que se pulsa
-		*/
-		ESTADO = !ESTADO;
-	}
-
 	// PROCESO
 	if (ESTADO == ON) // PANICO: se detiene todo
 	{
-		Serial.println("__PARAR__");
-
-		digitalWrite(LED_PANICO, HIGH); // enciende el LED
-		digitalWrite(PIN_BUZZER, HIGH); // Encender buzzer
-
-		resetPanico(); // esperamos trama para salir del modo PANICO
+		detachInterrupt(0); // suspendemos la interruccion 0
+		resetPanico();		// esperamos trama para salir del modo PANICO
 	}
 	else if (ESTADO == OFF) // NORMAL: todo en funcionamiento
 	{
-		digitalWrite(LED_PANICO, LOW); // apaga el LED
-		digitalWrite(PIN_BUZZER, LOW); // Encender buzzer
-
 		localizador();
 		bateria();
 	}
 }
 
 // FUNCIONES__________________________________________________
+
+// En esta funcion NO SE PUEDE USAR: delay, serial, llamar otras funciones
+void activacionBoton()
+{
+	digitalWrite(PIN_BUZZER, HIGH); // Encender buzzer
+	digitalWrite(LED_PANICO, HIGH); // Apagar LED
+	ESTADO = ON;
+	START = 2000;
+}
+
 void localizador()
 {
 	bool newData = false;
@@ -125,16 +119,12 @@ void localizador()
 	else
 	{
 		sw = 0;
-
 		// Intentar recibir secuencia durante
-		for (unsigned long start = millis(); (millis() - start) < 10000;)
+		for (START = millis(); (millis() - START) < 2000;)
 		{
-			while (GPS.available())
+			while (SerialGPS.available())
 			{
-				char c = GPS.read();
-
-				// GPS.println("Recibiendo  > " + (String)c + " < desde GPS"); // DEBUG: para el simulador
-				Serial.println("caracter = > " + (String)dato + " < recibido");
+				char c = SerialGPS.read();
 
 				if (gps.encode(c)) // Nueva secuencia recibida
 				{
@@ -166,53 +156,47 @@ void bateria()
 	// Dependiendo del voltaje mostramos un LED u otro
 	if (voltaje >= maximo)
 	{
-		Serial.println("Voltaje = " + (String)voltaje + "v"); // mostrando voltaje
-
 		digitalWrite(LED_VERDE, HIGH);
-		delay(ledDelay);
-		digitalWrite(LED_VERDE, LOW);
-		delay(ledDelay);
+		digitalWrite(LED_ROJO, LOW);
 	}
 	else if ((voltaje > minimo) && (voltaje < maximo))
 	{
-		Serial.println("Voltaje = " + (String)voltaje + "v");
-
+		digitalWrite(LED_VERDE, LOW);
 		digitalWrite(LED_ROJO, HIGH);
-		delay(ledDelay);
-		digitalWrite(LED_ROJO, LOW);
-		delay(ledDelay);
 	}
 }
 
 void resetPanico()
 {
 	// Esperar trama desde modulo Bluetooth
-	while (BLUETOOTH.available() == 0)
+	while (Serial.available() == 0)
 	{
 		// ESPERANDO...
 	}
 
-	if (BLUETOOTH.available() > 0) // Confirmamos si existe un valor en el modulo Bluetooth
+	if (Serial.available() > 0) // Confirmamos si existe un valor en el modulo Bluetooth
 	{
-		char dato = BLUETOOTH.read(); // leemos el valor y lo asignamos a la variable dato
+		char dato = Serial.read(); // leemos el valor y lo asignamos a la variable dato
 
-		// BLUETOOTH.println("Recibiendo  > " + (String)dato + " < desde BLUETOOTH"); // DEBUG: para el simulador
-		Serial.println("caracter = > " + (String)dato + " < recibido");
+		// Serial.println("caracter: = " + (String)dato + " recibido");
 
 		switch (dato) // comparamos el valor guardado en la variable dato
 		{
-		case 'a':						   // si el dato leido es 'a'
-			digitalWrite(LED_PANICO, LOW); // Reiniciamos el led de panico
-			ESTADO = OFF;				   // Reiniciamos el estado del boton
+		// si el dato leido es 'a'
+		case 'a':
+			digitalWrite(PIN_BUZZER, LOW);				 // Apagar buzzer
+			digitalWrite(LED_PANICO, LOW);				 // Apagar led panico
+			ESTADO = OFF;								 // Reiniciar estado del boton
+			attachInterrupt(0, activacionBoton, RISING); // Reanudamos la interruccion 0
 			break;
 
+		// si el dato leido es 'b'
 		case 'b':
 			// Otra Accion
 			break;
 		}
 
 		clean();
-		Serial.println("__INICIO__");
 	}
 }
 
